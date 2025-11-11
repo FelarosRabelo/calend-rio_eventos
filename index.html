@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FCO Gestor Calendário Eventos Tecnológicos</title>
+    <!-- Carrega o Tailwind CSS para estilos -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Configuração de fonte padrão e tema escuro -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #111827; /* Fundo escuro */
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100vh;
+            color: #d1d5db; /* Cor de texto padrão clara */
+        }
+    </style>
+</head>
+<body class="p-4 sm:p-8">
+
+    <div id="app" class="w-full max-w-5xl bg-gray-900 shadow-2xl rounded-3xl p-6 sm:p-10 transition-all duration-300">
+        <!-- Cabeçalho Principal (Tema Escuro + Branding) -->
+        <header class="mb-8 flex flex-col sm:flex-row justify-between items-start sm:items-center">
+            <h1 class="text-4xl font-extrabold text-blue-400">FCO Gestor Calendário Eventos Tecnológicos</h1>
+            <div class="mt-4 sm:mt-0 flex items-center space-x-3 text-sm text-gray-400">
+                <span id="user-info">Aguardando autenticação...</span>
+                <!-- Botão de Voltar (Visível apenas na view mensal) -->
+                <button id="back-button" class="hidden px-4 py-2 bg-gray-700 text-gray-200 rounded-xl font-medium shadow hover:bg-gray-600 transition-colors" onclick="setView('annual')">
+                    &larr; Voltar
+                </button>
+            </div>
+        </header>
+
+        <!-- Container do Calendário (Anual ou Mensal) -->
+        <div id="calendar-container">
+            <!-- Conteúdo gerado via JS -->
+        </div>
+    </div>
+
+    <!-- Modal para Adicionar Eventos (Tema Escuro) -->
+    <div id="event-modal" class="fixed inset-0 bg-black bg-opacity-70 hidden items-center justify-center p-4 z-50">
+        <div class="bg-gray-800 text-gray-100 p-6 rounded-2xl shadow-2xl w-full max-w-md transform transition-all duration-300 scale-95 opacity-0" id="modal-content">
+            <h2 id="modal-title" class="text-2xl font-bold mb-4 text-blue-400">Adicionar Novo Evento</h2>
+            <p id="modal-date-info" class="text-gray-400 mb-4"></p>
+
+            <form id="event-form">
+                <input type="hidden" id="event-month">
+                <input type="hidden" id="event-day">
+
+                <div class="mb-4">
+                    <label for="event-text" class="block text-sm font-medium text-gray-300 mb-1">Descrição do Evento:</label>
+                    <input type="text" id="event-text" required placeholder="Ex: Reunião com Cliente" class="w-full p-3 border border-gray-600 bg-gray-700 text-white rounded-xl focus:ring-blue-500 focus:border-blue-500 transition-colors">
+                </div>
+                
+                <div class="mb-6">
+                    <label for="event-link" class="block text-sm font-medium text-gray-300 mb-1">Link (Opcional):</label>
+                    <input type="url" id="event-link" placeholder="https://www.google.com" class="w-full p-3 border border-gray-600 bg-gray-700 text-white rounded-xl focus:ring-blue-500 focus:border-blue-500 transition-colors">
+                </div>
+
+                <div id="current-events" class="mb-4 p-3 bg-gray-700 rounded-xl max-h-40 overflow-y-auto hidden">
+                    <h3 class="font-semibold text-blue-400 mb-2">Eventos Existentes:</h3>
+                    <ul id="event-list" class="space-y-2 text-gray-200">
+                        <!-- Lista de eventos será populada aqui -->
+                    </ul>
+                </div>
+                
+                <div class="flex justify-end space-x-3 pt-2">
+                    <button type="button" onclick="closeModal()" class="px-5 py-2 border border-gray-600 bg-gray-700 rounded-xl text-gray-200 hover:bg-gray-600 transition-colors">Cancelar</button>
+                    <button type="submit" class="px-5 py-2 bg-blue-600 text-white rounded-xl font-semibold hover:bg-blue-700 transition-colors shadow-md">Salvar Evento</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, query, updateDoc, arrayUnion, arrayRemove, getDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // Ativa o log de depuração do Firestore
+        setLogLevel('Debug');
+
+        // --- Variáveis Globais de Configuração do Ambiente ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app;
+        let db;
+        let auth;
+        let userId = null;
+        let isAuthReady = false;
+        
+        // --- Variáveis de Estado da Aplicação ---
+        let currentView = 'annual'; // 'annual' ou 'monthly'
+        let selectedMonth = 0;      // 0 = Janeiro, 11 = Dezembro
+        // Eventos agora armazenam objetos { text: string, link: string }
+        let events = {};            // Armazena os dados de eventos { monthIndex: { day: [{text, link}], ... }, ... }
+        
+        const calendarContainer = document.getElementById('calendar-container');
+        const backButton = document.getElementById('back-button');
+        const userInfoSpan = document.getElementById('user-info');
+        const eventModal = document.getElementById('event-modal');
+        const modalContent = document.getElementById('modal-content');
+        const currentEventsDiv = document.getElementById('current-events');
+        const eventListUl = document.getElementById('event-list');
+        const eventLinkInput = document.getElementById('event-link');
+
+        const MONTH_NAMES = [
+            "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+            "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"
+        ];
+        const DAY_NAMES = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+        const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        const YEAR = 2026;
+
+        /**
+         * Retorna a referência do documento do Firestore para os eventos do usuário.
+         * Caminho: /artifacts/{appId}/users/{userId}/2026_calendar_events/events_data
+         */
+        const getEventsDocRef = (uid) => {
+            const collectionPath = `/artifacts/${appId}/users/${uid}/2026_calendar_events`;
+            return doc(db, collectionPath, 'events_data');
+        };
+        
+        /**
+         * Inicializa o Firebase e a Autenticação.
+         */
+        async function initializeFirebase() {
+            if (!firebaseConfig) {
+                console.error("Configuração do Firebase não encontrada. Usando modo de simulação.");
+                userInfoSpan.textContent = "Modo de simulação (sem persistência)";
+                isAuthReady = true;
+                renderApp();
+                return;
+            }
+
+            try {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // 1. Configura o listener de estado de autenticação
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        userInfoSpan.textContent = `Usuário ID: ${userId}`;
+                        isAuthReady = true;
+                        console.log("Autenticação completa. UID:", userId);
+                        // Inicia o listener de dados após a autenticação
+                        setupDataListener();
+                    } else {
+                        // Isso é mais provável de acontecer durante a inicialização antes de sign-in
+                        userInfoSpan.textContent = "Não autenticado";
+                        isAuthReady = true;
+                        // Se não for possível autenticar, ainda assim renderiza (pode estar em modo anônimo)
+                        renderApp();
+                    }
+                });
+
+                // 2. Realiza o login (com token ou anonimamente)
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+            } catch (error) {
+                console.error("Erro ao inicializar Firebase ou autenticar:", error);
+                userInfoSpan.textContent = "Erro de autenticação! Verifique o console.";
+                isAuthReady = true;
+                renderApp(); // Renderiza mesmo com erro para não travar a UI
+            }
+        }
+
+        /**
+         * Configura o listener em tempo real para os eventos.
+         */
+        function setupDataListener() {
+            if (!isAuthReady || !userId) return;
+
+            const docRef = getEventsDocRef(userId);
+
+            // Listener em tempo real (onSnapshot)
+            onSnapshot(docRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    // Atualiza o objeto 'events' com os dados do Firestore
+                    // Garante que 'data' seja um objeto, mesmo que venha como null
+                    events = docSnap.data().data || {};
+                    console.log("Eventos atualizados recebidos:", events);
+                } else {
+                    // Se o documento não existir, inicializa com um objeto vazio localmente
+                    events = {};
+                    console.log("Documento de eventos não encontrado, inicializando vazio.");
+                }
+                // Renderiza o calendário com os novos dados
+                renderApp();
+            }, (error) => {
+                console.error("Erro no listener de eventos do Firestore:", error);
+            });
+        }
+
+        /**
+         * Salva o objeto de eventos atual no Firestore.
+         */
+        async function saveEventsToFirestore() {
+            if (!isAuthReady || !userId) {
+                console.warn("Autenticação não concluída. Não foi possível salvar os dados.");
+                return;
+            }
+            
+            const docRef = getEventsDocRef(userId);
+
+            try {
+                // Tenta definir o documento.
+                await setDoc(docRef, { data: events }, { merge: false }); 
+                console.log("Eventos salvos com sucesso no Firestore.");
+            } catch (error) {
+                console.error("Erro ao salvar eventos no Firestore:", error);
+            }
+        }
+
+        /**
+         * Renderiza a aplicação com base na view atual.
+         */
+        function renderApp() {
+            backButton.classList.toggle('hidden', currentView === 'annual');
+            if (currentView === 'annual') {
+                renderAnnualView();
+            } else {
+                renderMonthlyView(selectedMonth);
+            }
+        }
+        
+        /**
+         * Altera a view (anual/mensal) e renderiza.
+         * @param {string} view - 'annual' ou 'monthly'
+         * @param {number} [monthIndex] - O índice do mês (0-11) para a view 'monthly'.
+         */
+        window.setView = (view, monthIndex = 0) => {
+            currentView = view;
+            if (view === 'monthly') {
+                selectedMonth = monthIndex;
+            }
+            renderApp();
+        };
+
+        /**
+         * Gera o HTML para a view anual (12 meses).
+         */
+        function renderAnnualView() {
+            calendarContainer.innerHTML = `
+                <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                    ${MONTH_NAMES.map((name, index) => {
+                        // Verifica se há eventos neste mês
+                        const monthEvents = events[index];
+                        const hasEvents = monthEvents && Object.keys(monthEvents).length > 0;
+                        
+                        // Estilos para meses com eventos (Dark Mode)
+                        const eventStyle = hasEvents 
+                            ? 'border-blue-600 bg-blue-900 shadow-lg transform scale-[1.02]' 
+                            : 'border-gray-700 hover:bg-gray-700';
+                        const eventIndicator = hasEvents 
+                            ? `<span class="absolute top-2 right-2 flex h-3 w-3"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span><span class="relative inline-flex rounded-full h-3 w-3 bg-blue-600" title="Eventos agendados"></span></span>`
+                            : '';
+
+                        return `
+                            <div 
+                                class="month-card relative p-6 border-2 rounded-2xl cursor-pointer transition-all duration-200 ${eventStyle} text-gray-100"
+                                onclick="setView('monthly', ${index})"
+                            >
+                                ${eventIndicator}
+                                <h2 class="text-xl font-bold text-gray-100">${name}</h2>
+                                <p class="text-sm text-gray-400 mt-1">${DAYS_IN_MONTH[index]} dias</p>
+                                <p class="text-xs text-blue-400 font-medium mt-3">${hasEvents ? 'Eventos! Clique para ver' : 'Clique para agendar'}</p>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+        }
+
+        /**
+         * Gera o HTML para a view mensal (dias do mês selecionado).
+         * @param {number} monthIndex - O índice do mês (0-11).
+         */
+        function renderMonthlyView(monthIndex) {
+            const monthName = MONTH_NAMES[monthIndex];
+            const daysInMonth = DAYS_IN_MONTH[monthIndex];
+            // 2026 não é bissexto
+            const firstDayOfMonth = new Date(YEAR, monthIndex, 1).getDay(); // 0 (Dom) a 6 (Sáb)
+            
+            // Container principal do mês
+            let html = `<h2 class="text-3xl font-bold mb-6 text-blue-400">${monthName}, ${YEAR}</h2>`;
+            
+            // Cabeçalho dos dias da semana (Dark Mode)
+            html += `
+                <div class="grid grid-cols-7 text-center font-semibold text-sm text-gray-400 border-b border-gray-700 pb-2 mb-2">
+                    ${DAY_NAMES.map(day => `<div class="p-2">${day}</div>`).join('')}
+                </div>
+            `;
+
+            // Grid dos dias
+            html += '<div class="grid grid-cols-7 gap-1 sm:gap-3">';
+            
+            // Preenche espaços vazios (padding days)
+            for (let i = 0; i < firstDayOfMonth; i++) {
+                html += `<div class="p-2 aspect-square"></div>`;
+            }
+
+            // Preenche os dias do mês
+            for (let day = 1; day <= daysInMonth; day++) {
+                const dayKey = String(day);
+                // dayEvents é agora um array de objetos [{text, link}, ...]
+                const dayEvents = events[monthIndex]?.[dayKey] || [];
+                const hasEvents = dayEvents.length > 0;
+
+                // Estilos base
+                let dayStyle = 'p-2 sm:p-3 text-center rounded-xl cursor-pointer transition-all duration-150 relative aspect-square flex flex-col items-center justify-center';
+                
+                // Estilos para o dia atual (Dark Mode)
+                const today = new Date();
+                const isCurrentDay = today.getFullYear() === YEAR && today.getMonth() === monthIndex && today.getDate() === day;
+                
+                if (isCurrentDay) {
+                    dayStyle += ' border-2 border-red-500 bg-red-900 font-bold text-red-200 shadow-md';
+                } else if (hasEvents) {
+                    dayStyle += ' bg-blue-800 hover:bg-blue-700 border-2 border-blue-600 font-medium text-white shadow-sm';
+                } else {
+                    dayStyle += ' bg-gray-700 hover:bg-gray-600 text-gray-100';
+                }
+
+                // Indicador visual de eventos
+                const eventDot = hasEvents 
+                    ? `<div class="absolute bottom-1 left-1/2 -translate-x-1/2 w-1.5 h-1.5 bg-blue-400 rounded-full"></div>`
+                    : '';
+
+                html += `
+                    <div 
+                        class="${dayStyle}" 
+                        onclick="openEventModal(${monthIndex}, ${day})"
+                    >
+                        <span class="text-lg leading-none">${day}</span>
+                        ${eventDot}
+                    </div>
+                `;
+            }
+
+            html += '</div>';
+            calendarContainer.innerHTML = html;
+        }
+        
+        /**
+         * Abre o modal para adicionar/visualizar eventos de um dia.
+         * @param {number} monthIndex - Índice do mês (0-11).
+         * @param {number} day - Dia do mês (1-31).
+         */
+        window.openEventModal = (monthIndex, day) => {
+            document.getElementById('event-month').value = monthIndex;
+            document.getElementById('event-day').value = day;
+            document.getElementById('modal-date-info').textContent = `${DAY_NAMES[new Date(YEAR, monthIndex, day).getDay()]}, ${day} de ${MONTH_NAMES[monthIndex]} de ${YEAR}`;
+            document.getElementById('event-text').value = '';
+            document.getElementById('event-link').value = ''; // Limpa o campo de link
+            
+            // Popula a lista de eventos
+            const dayKey = String(day);
+            // dayEvents é agora um array de objetos
+            const dayEvents = events[monthIndex]?.[dayKey] || [];
+            
+            eventListUl.innerHTML = ''; // Limpa a lista
+            if (dayEvents.length > 0) {
+                currentEventsDiv.classList.remove('hidden');
+                dayEvents.forEach((eventObj, index) => {
+                    // Verifica se o link é válido
+                    const link = eventObj.link && eventObj.link.trim() !== '' ? eventObj.link : null;
+                    const linkIcon = link
+                        ? `<a href="${link}" target="_blank" class="text-blue-400 hover:text-blue-300 ml-2" title="Abrir Link">🔗</a>`
+                        : '';
+                        
+                    // Passa o índice do array para a função de exclusão
+                    eventListUl.innerHTML += `
+                        <li class="flex justify-between items-center bg-gray-600 p-2 rounded-lg border border-gray-500">
+                            <span class="flex items-center text-gray-100">
+                                ${eventObj.text} 
+                                ${linkIcon}
+                            </span>
+                            <button 
+                                type="button" 
+                                class="text-red-400 hover:text-red-500 text-lg leading-none transition-colors"
+                                onclick="deleteEvent(${monthIndex}, ${day}, ${index})"
+                                title="Excluir Evento"
+                            >&times;</button>
+                        </li>
+                    `;
+                });
+            } else {
+                currentEventsDiv.classList.add('hidden');
+            }
+
+            // Exibe o modal com animação
+            eventModal.classList.remove('hidden');
+            eventModal.classList.add('flex');
+            setTimeout(() => {
+                modalContent.classList.remove('scale-95', 'opacity-0');
+                modalContent.classList.add('scale-100', 'opacity-100');
+            }, 10);
+        };
+
+        /**
+         * Fecha o modal de eventos.
+         */
+        window.closeModal = () => {
+            // Esconde o modal com animação
+            modalContent.classList.remove('scale-100', 'opacity-100');
+            modalContent.classList.add('scale-95', 'opacity-0');
+            setTimeout(() => {
+                eventModal.classList.remove('flex');
+                eventModal.classList.add('hidden');
+            }, 300);
+        };
+
+        /**
+         * Adiciona um novo evento ao estado e salva no Firestore.
+         */
+        document.getElementById('event-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const monthIndex = parseInt(document.getElementById('event-month').value);
+            const day = parseInt(document.getElementById('event-day').value);
+            const eventText = document.getElementById('event-text').value.trim();
+            const eventLink = document.getElementById('event-link').value.trim();
+            
+            if (!eventText) return;
+
+            // Cria o objeto do novo evento
+            const newEvent = {
+                text: eventText,
+                link: eventLink
+            };
+
+            // Garante que o objeto do mês exista
+            if (!events[monthIndex]) {
+                events[monthIndex] = {};
+            }
+
+            // Garante que a lista de eventos do dia exista
+            const dayKey = String(day);
+            if (!events[monthIndex][dayKey]) {
+                events[monthIndex][dayKey] = [];
+            }
+
+            // Adiciona o novo evento (objeto)
+            events[monthIndex][dayKey].push(newEvent);
+            
+            // Salva no Firestore
+            await saveEventsToFirestore();
+
+            // Atualiza a visualização no modal e no calendário
+            closeModal();
+            renderApp();
+        });
+
+        /**
+         * Deleta um evento do estado (baseado no índice dentro do array do dia) e salva no Firestore.
+         * @param {number} monthIndex - Índice do mês (0-11).
+         * @param {number} day - Dia do mês (1-31).
+         * @param {number} eventIndex - O índice do evento dentro do array do dia.
+         */
+        window.deleteEvent = async (monthIndex, day, eventIndex) => {
+            // SUBSTITUIÇÃO DE CONFIRM(): Usamos uma função temporária que simula a lógica de confirmação
+            // Em uma aplicação real, você usaria um modal customizado (como o event-modal)
+            const proceed = true; // Simula a confirmação imediata para manter o código funcional no ambiente
+
+            if (proceed) {
+                const dayKey = String(day);
+                if (events[monthIndex] && events[monthIndex][dayKey]) {
+                    
+                    // Remove o evento usando o índice
+                    events[monthIndex][dayKey].splice(eventIndex, 1);
+                    
+                    // Limpa o dia e/ou o mês se estiverem vazios
+                    if (events[monthIndex][dayKey].length === 0) {
+                        delete events[monthIndex][dayKey];
+                    }
+                    if (Object.keys(events[monthIndex]).length === 0) {
+                        delete events[monthIndex];
+                    }
+
+                    // Salva no Firestore
+                    await saveEventsToFirestore();
+
+                    // Fecha e reabre o modal para atualizar a lista
+                    closeModal();
+                    
+                    // Verifica se o dia ainda tem eventos antes de reabrir
+                    if (events[monthIndex] && events[monthIndex][dayKey] && events[monthIndex][dayKey].length > 0) {
+                         openEventModal(monthIndex, day);
+                    } else {
+                        // Se não tem mais eventos, renderiza o mês para remover o destaque do dia
+                        renderApp(); 
+                    }
+                }
+            } else {
+                // Caso a confirmação fosse cancelada
+                console.log("Exclusão cancelada.");
+            }
+        };
+
+        // --- Inicia a Aplicação ---
+        window.onload = initializeFirebase;
+    </script>
+
+</body>
+</html>
