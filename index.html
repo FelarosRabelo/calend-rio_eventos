@@ -198,13 +198,14 @@
          * Inicializa o Firebase e a Autenticação.
          */
         async function initializeFirebase() {
-            if (!firebaseConfig) {
-                console.error("Configuração do Firebase não encontrada. Usando modo de simulação.");
-                userInfoSpan.textContent = "Modo de simulação (sem persistência)";
-                isAuthReady = true;
-                renderApp();
-                return;
-            }
+        const firebaseConfig = {
+          apiKey: "AIzaSyD9T47wj4y73N0VVRZh-_sIq1KmZWsJ2WE",
+          authDomain: "fco-calendario-2026-6d0ac.firebaseapp.com",
+          projectId: "fco-calendario-2026-6d0ac",
+          storageBucket: "fco-calendario-2026-6d0ac.firebasestorage.app",
+          messagingSenderId: "103187250355",
+          appId: "1:103187250355:web:ce9d798fc9ab2b1e2d44c6"   
+            };
 
             try {
                 app = initializeApp(firebaseConfig);
