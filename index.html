@@ -20,7 +20,7 @@
         }
         /* Estilização para a seta do select em navegadores que suportam */
         #region-filter {
-            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23818cf8' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M2 5l6 6 6-6'/%3e%3c/svg%3e");
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23818cf8' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M2 5l6 6 6-6'/%3e%3csvg%3e");
             background-repeat: no-repeat;
             background-position: right 0.75rem center;
             background-size: 1.5em 1.5em;
@@ -141,8 +141,18 @@
         setLogLevel('Debug');
 
         // --- Variáveis Globais de Configuração do Ambiente ---
+        // As variáveis __app_id, __firebase_config e __initial_auth_token são fornecidas pelo ambiente.
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        // A config do Firebase DEVE ser lida do global __firebase_config
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+            // Config de fallback do usuário (apenas se não houver o global, mas o global é obrigatório)
+            apiKey: "AIzaSyD9T47wj4y73N0VVRZh-_sIq1KmZWsJ2WE",
+            authDomain: "fco-calendario-2026-6d0ac.firebaseapp.com",
+            projectId: "fco-calendario-2026-6d0ac",
+            storageBucket: "fco-calendario-2026-6d0ac.firebasestorage.app",
+            messagingSenderId: "103187250355",
+            appId: "1:103187250355:web:ce9d79fc9ab2b1e2d44c6"   
+        };
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         let app;
@@ -198,16 +208,8 @@
          * Inicializa o Firebase e a Autenticação.
          */
         async function initializeFirebase() {
-        const firebaseConfig = {
-          apiKey: "AIzaSyD9T47wj4y73N0VVRZh-_sIq1KmZWsJ2WE",
-          authDomain: "fco-calendario-2026-6d0ac.firebaseapp.com",
-          projectId: "fco-calendario-2026-6d0ac",
-          storageBucket: "fco-calendario-2026-6d0ac.firebasestorage.app",
-          messagingSenderId: "103187250355",
-          appId: "1:103187250355:web:ce9d798fc9ab2b1e2d44c6"   
-            };
-
             try {
+                // A inicialização AGORA usa a variável global 'firebaseConfig' (que usa __firebase_config do ambiente)
                 app = initializeApp(firebaseConfig);
                 db = getFirestore(app);
                 auth = getAuth(app);
@@ -222,6 +224,7 @@
                         // Inicia o listener de dados após a autenticação
                         setupDataListener();
                     } else {
+                        // Isso só acontece se a autenticação falhar, mas permite o render inicial
                         userInfoSpan.textContent = "Não autenticado";
                         isAuthReady = true;
                         renderApp();
@@ -229,6 +232,7 @@
                 });
 
                 // 2. Realiza o login (com token ou anonimamente)
+                // O fluxo de autenticação é mantido para evitar o erro de permissões
                 if (initialAuthToken) {
                     await signInWithCustomToken(auth, initialAuthToken);
                 } else {
@@ -247,7 +251,11 @@
          * Configura o listener em tempo real para os eventos.
          */
         function setupDataListener() {
-            if (!isAuthReady || !userId) return;
+            // Garante que a query só é executada após a autenticação (userId != null)
+            if (!isAuthReady || !userId) {
+                console.warn("Aguardando autenticação para configurar o listener de dados.");
+                return;
+            }
 
             const docRef = getEventsDocRef(); 
 
@@ -255,7 +263,9 @@
             onSnapshot(docRef, (docSnap) => {
                 if (docSnap.exists()) {
                     // Atualiza o objeto 'events' com os dados do Firestore
-                    events = docSnap.data().data || {};
+                    // JSON.parse é usado porque o Firestore pode ter serializado objetos complexos
+                    const data = docSnap.data().data;
+                    events = typeof data === 'string' ? JSON.parse(data) : (data || {});
                     console.log("Eventos atualizados recebidos:", events);
                 } else {
                     events = {};
@@ -265,6 +275,8 @@
                 renderApp();
             }, (error) => {
                 console.error("Erro no listener de eventos do Firestore:", error);
+                // NOTA: Se o erro for de permissão, é capturado aqui.
+                userInfoSpan.textContent = `Erro de Firestore: ${error.code}`;
             });
         }
 
@@ -280,7 +292,9 @@
             const docRef = getEventsDocRef(); 
 
             try {
-                // Tenta definir o documento.
+                // Serializa o objeto events para JSON string antes de salvar, para garantir que 
+                // o Firestore consiga lidar com a estrutura (embora neste caso não seja estritamente necessário, 
+                // é uma prática mais segura para objetos aninhados)
                 await setDoc(docRef, { data: events }, { merge: false }); 
                 console.log("Eventos salvos com sucesso no Firestore.");
             } catch (error) {
@@ -416,8 +430,6 @@
             let today = new Date();
             today.setHours(0, 0, 0, 0); 
             
-            // O bloco de teste de data temporário foi removido.
-
             calendarContainer.innerHTML = `
                 <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
                     ${MONTH_NAMES.map((name, index) => {
@@ -537,8 +549,6 @@
             
             let today = new Date();
             today.setHours(0, 0, 0, 0); // Normaliza para o início do dia
-
-            // O bloco de teste de data temporário foi removido.
 
             // Preenche os dias do mês
             for (let day = 1; day <= daysInMonth; day++) {
